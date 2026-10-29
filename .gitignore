@@ -22,3 +22,7 @@ devnet-wallet.json
 .DS_Store
 .vscode/
 .idea/
+
+.env
+.env.*
+!.env.example

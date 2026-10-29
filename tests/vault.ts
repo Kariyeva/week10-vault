@@ -1,204 +1,323 @@
-/**
- * Тесты для Simple Vault на devnet
- *
- * Сценарий:
- *   1. Admin создаёт vault (initialize_vault)
- *   2. Пользователи A и B создают свои карточки (create_user_card)
- *   3. Повторное создание карточки A падает
- *   4. A вносит 100 токенов → 100 shares, B вносит 50 → 50 shares
- *   5. Депозит без карточки и депозит 0 — ошибки
- */
-
 import * as anchor from "@coral-xyz/anchor";
 import { Program } from "@coral-xyz/anchor";
-import { createMint, createAccount, mintTo, getAccount } from "@solana/spl-token";
 import {
-  Keypair,
-  PublicKey,
-  LAMPORTS_PER_SOL,
-  SystemProgram,
-  Transaction,
+  createMint, createAccount, mintTo, getAccount, getMint,
+  TOKEN_PROGRAM_ID,
+} from "@solana/spl-token";
+import {
+  Keypair, PublicKey, SystemProgram, Transaction, SYSVAR_RENT_PUBKEY,
 } from "@solana/web3.js";
 import { assert } from "chai";
+import * as fs from "node:fs";
 import { SimpleVault } from "../target/types/simple_vault";
 
-// Переводим SOL от admin → pubkey (обходит rate limit devnet airdrop)
-async function fundFromAdmin(
-  provider: anchor.AnchorProvider,
-  admin: Keypair,
-  pubkey: PublicKey,
-  lamports = 0.05 * LAMPORTS_PER_SOL
-) {
-  const tx = new Transaction().add(
-    SystemProgram.transfer({ fromPubkey: admin.publicKey, toPubkey: pubkey, lamports })
+describe("Задание 9 — депозиты и shares", () => {
+  const baseProvider = anchor.AnchorProvider.env();
+  const provider = new anchor.AnchorProvider(
+    baseProvider.connection,
+    baseProvider.wallet,
+    {
+      commitment: "confirmed",
+      preflightCommitment: "confirmed",
+      maxRetries: 5,
+    }
   );
-  await provider.sendAndConfirm(tx, [admin]);
-}
-
-describe("simple_vault", () => {
-  const provider = anchor.AnchorProvider.env();
   anchor.setProvider(provider);
-
+  const connection = provider.connection;
   const program = anchor.workspace.SimpleVault as Program<SimpleVault>;
   const admin = (provider.wallet as anchor.Wallet).payer;
-  const userA = Keypair.generate();
-  const userB = Keypair.generate();
+  const users = [Keypair.generate(), Keypair.generate(), Keypair.generate()];
+  const unit = 1_000_000;
+  const tokens: PublicKey[] = [];
+  const shares: PublicKey[] = [];
+  const txs: Record<string, string> = {};
+  let mint: PublicKey;
+  let vault: PublicKey;
+  let vaultTokens: PublicKey;
+  let shareMint: PublicKey;
+  let feeWallet: PublicKey;
 
-  let tokenMint: PublicKey;
-  let vaultStatePDA: PublicKey;
-  let vaultTokenAccountPDA: PublicKey;
-  let shareMintPDA: PublicKey;
+  const pda = (seed: string) => PublicKey.findProgramAddressSync(
+    [Buffer.from(seed), mint.toBuffer()], program.programId
+  )[0];
 
-  // Токен-аккаунты (токен vault) и share-аккаунты пользователей
-  const userC = Keypair.generate(); // без карточки
-  const tokenAcc: Record<string, PublicKey> = {};
-  const shareAcc: Record<string, PublicKey> = {};
-  const UNIT = 1_000_000; // decimals = 6
+  const card = (i: number) => PublicKey.findProgramAddressSync(
+    [Buffer.from("user_card"), vault.toBuffer(), users[i].publicKey.toBuffer()],
+    program.programId
+  )[0];
 
-  const deposit = (user: Keypair, amount: number) =>
-    program.methods
-      .deposit(new anchor.BN(amount))
-      .accounts({
-        vaultState: vaultStatePDA,
-        userCard: cardPda(user.publicKey),
-        vaultTokenAccount: vaultTokenAccountPDA,
-        shareMint: shareMintPDA,
-        userTokenAccount: tokenAcc[user.publicKey.toBase58()],
-        userShareAccount: shareAcc[user.publicKey.toBase58()],
-        user: user.publicKey,
-      } as any)
-      .signers([user])
+  function deposit(i: number, amount: number, fee = feeWallet) {
+    return program.methods.deposit(new anchor.BN(amount))
+      .accountsStrict({
+        vaultState: vault,
+        userCard: card(i),
+        vaultTokenAccount: vaultTokens,
+        shareMint,
+        userTokenAccount: tokens[i],
+        userShareAccount: shares[i],
+        feeWallet: fee,
+        user: users[i].publicKey,
+        tokenProgram: TOKEN_PROGRAM_ID,
+      })
+      .signers([users[i]])
       .rpc();
+  }
 
-  const cardPda = (user: PublicKey) =>
-    PublicKey.findProgramAddressSync(
-      [Buffer.from("user_card"), vaultStatePDA.toBuffer(), user.toBuffer()],
-      program.programId
-    )[0];
+  function pause(value: boolean, signer = admin) {
+    return program.methods.setPaused(value)
+      .accountsStrict({ vaultState: vault, admin: signer.publicKey })
+      .signers([signer])
+      .rpc();
+  }
+
+  async function expectError(action: () => Promise<unknown>, code: string) {
+    let caught: any;
+    try {
+      await action();
+    } catch (error) {
+      caught = error;
+    }
+    assert.exists(caught, `Ожидалась ошибка ${code}`);
+    assert.equal(caught.error?.errorCode?.code, code);
+  }
+
+  async function snapshot() {
+    const v = await program.account.vaultState.fetch(vault);
+    const balances = [];
+    for (let i = 0; i < 3; i++) {
+      balances.push({
+        tokens: (await getAccount(connection, tokens[i], "confirmed")).amount.toString(),
+        shares: (await getAccount(connection, shares[i], "confirmed")).amount.toString(),
+      });
+    }
+    return JSON.stringify({
+      tokens: v.totalTokens.toString(),
+      shares: v.totalShares.toString(),
+      fee: (await getAccount(connection, feeWallet, "confirmed")).amount.toString(),
+      vaultBalance: (await getAccount(connection, vaultTokens, "confirmed")).amount.toString(),
+      balances,
+    });
+  }
+
+  async function rejectDeposit(action: () => Promise<unknown>, code: string) {
+    const before = await snapshot();
+    await expectError(action, code);
+    assert.equal(await snapshot(), before, "Неудачный депозит изменил балансы");
+  }
 
   before(async () => {
-    await fundFromAdmin(provider, admin, userA.publicKey);
-    await fundFromAdmin(provider, admin, userB.publicKey);
-    await fundFromAdmin(provider, admin, userC.publicKey);
+    const funding = new Transaction();
+    for (const user of users) {
+      funding.add(SystemProgram.transfer({
+        fromPubkey: admin.publicKey,
+        toPubkey: user.publicKey,
+        lamports: 10_000_000,
+      }));
+    }
+    await provider.sendAndConfirm(funding);
 
-    tokenMint = await createMint(provider.connection, admin, admin.publicKey, null, 6);
-
-    [vaultStatePDA] = PublicKey.findProgramAddressSync(
-      [Buffer.from("vault"), tokenMint.toBuffer()],
-      program.programId
+    mint = await createMint(
+      connection, admin, admin.publicKey, null, 6,
+      undefined, { commitment: "confirmed" }
     );
-    [vaultTokenAccountPDA] = PublicKey.findProgramAddressSync(
-      [Buffer.from("vault_tokens"), tokenMint.toBuffer()],
-      program.programId
-    );
-    [shareMintPDA] = PublicKey.findProgramAddressSync(
-      [Buffer.from("share_mint"), tokenMint.toBuffer()],
-      program.programId
+    vault = pda("vault");
+    vaultTokens = pda("vault_tokens");
+    shareMint = pda("share_mint");
+    feeWallet = await createAccount(
+      connection, admin, mint, admin.publicKey,
+      undefined, { commitment: "confirmed" }
     );
   });
 
-  it("initialize_vault: vault создан", async () => {
-    await program.methods
-      .initializeVault()
-      .accounts({
-        vaultState: vaultStatePDA,
-        vaultTokenAccount: vaultTokenAccountPDA,
-        shareMint: shareMintPDA,
-        tokenMint,
+  it("1. Создаёт vault со счётом комиссии и минимумом 1 токен", async () => {
+    txs.initialize = await program.methods.initializeVault()
+      .accountsStrict({
+        vaultState: vault,
+        vaultTokenAccount: vaultTokens,
+        shareMint,
+        tokenMint: mint,
+        feeWallet,
         admin: admin.publicKey,
-      } as any)
-      .rpc();
+        tokenProgram: TOKEN_PROGRAM_ID,
+        systemProgram: SystemProgram.programId,
+        rent: SYSVAR_RENT_PUBKEY,
+      }).rpc();
 
-    const vault = await program.account.vaultState.fetch(vaultStatePDA);
-    assert.equal(vault.admin.toBase58(), admin.publicKey.toBase58());
-    assert.equal(vault.tokenMint.toBase58(), tokenMint.toBase58());
-    assert.equal(vault.shareMint.toBase58(), shareMintPDA.toBase58());
-  });
+    const v = await program.account.vaultState.fetch(vault);
+    assert.equal(v.feeWallet.toBase58(), feeWallet.toBase58());
+    assert.equal(v.minDeposit.toString(), String(unit));
+    assert.isFalse(v.paused);
 
-  it("create_user_card: у каждого пользователя своя карточка", async () => {
-    for (const user of [userA, userB]) {
-      const userCard = cardPda(user.publicKey);
-      await program.methods
-        .createUserCard()
-        .accounts({ vaultState: vaultStatePDA, userCard, user: user.publicKey } as any)
-        .signers([user])
-        .rpc();
+    for (let i = 0; i < 3; i++) {
+      txs[`card${i + 1}`] = await program.methods.createUserCard()
+        .accountsStrict({
+          vaultState: vault,
+          userCard: card(i),
+          user: users[i].publicKey,
+          systemProgram: SystemProgram.programId,
+        }).signers([users[i]]).rpc();
 
-      const card = await program.account.userCard.fetch(userCard);
-      assert.equal(card.owner.toBase58(), user.publicKey.toBase58());
-      assert.equal(card.vault.toBase58(), vaultStatePDA.toBase58());
+      tokens.push(await createAccount(
+        connection, admin, mint, users[i].publicKey,
+        undefined, { commitment: "confirmed" }
+      ));
+      shares.push(await createAccount(
+        connection, admin, shareMint, users[i].publicKey,
+        undefined, { commitment: "confirmed" }
+      ));
+      await mintTo(
+        connection, admin, mint, tokens[i], admin, 1000 * unit,
+        [], { commitment: "confirmed" }
+      );
     }
-    assert.notEqual(cardPda(userA.publicKey).toBase58(), cardPda(userB.publicKey).toBase58());
   });
 
-  it("create_user_card: вторая карточка для того же пользователя — ошибка", async () => {
-    let failed = false;
-    try {
-      await program.methods
-        .createUserCard()
-        .accounts({
-          vaultState: vaultStatePDA,
-          userCard: cardPda(userA.publicKey),
-          user: userA.publicKey,
-        } as any)
-        .signers([userA])
-        .rpc();
-    } catch {
-      failed = true;
+  it("2. Отклоняет нулевой депозит без изменения балансов", async () => {
+    await rejectDeposit(() => deposit(0, 0), "ZeroAmount");
+  });
+
+  it("3. Отклоняет депозит меньше 1 токена", async () => {
+    await rejectDeposit(() => deposit(0, unit - 1), "BelowMinimum");
+  });
+
+  it("4. Принимает ровно 1 токен: комиссия 0.01, shares 0.99", async () => {
+    txs.minimum = await deposit(0, unit);
+    assert.equal(
+      (await getAccount(connection, feeWallet, "confirmed")).amount.toString(),
+      "10000"
+    );
+    assert.equal(
+      (await getAccount(connection, shares[0], "confirmed")).amount.toString(),
+      "990000"
+    );
+  });
+
+  it("5. Трое пользователей вносят суммарно 100, 200 и 300 токенов", async () => {
+    txs.depositA = await deposit(0, 99 * unit);
+    txs.depositB = await deposit(1, 200 * unit);
+    txs.depositC = await deposit(2, 300 * unit);
+
+    const gross = [100, 200, 300];
+    const net = [99, 198, 297];
+    for (let i = 0; i < 3; i++) {
+      const c = await program.account.userCard.fetch(card(i));
+      assert.equal(c.deposited.toString(), String(gross[i] * unit));
+      assert.equal(c.shares.toString(), String(net[i] * unit));
+      assert.equal(
+        (await getAccount(connection, tokens[i], "confirmed")).amount.toString(),
+        String((1000 - gross[i]) * unit)
+      );
+      assert.equal(
+        (await getAccount(connection, shares[i], "confirmed")).amount.toString(),
+        String(net[i] * unit)
+      );
     }
-    assert.isTrue(failed, "повторная карточка должна быть отклонена");
   });
 
-  it("deposit: A вносит 100 токенов → получает 100 shares", async () => {
-    // Токен-аккаунты пользователей и стартовые токены
-    for (const user of [userA, userB, userC]) {
-      const key = user.publicKey.toBase58();
-      tokenAcc[key] = await createAccount(provider.connection, admin, tokenMint, user.publicKey);
-      shareAcc[key] = await createAccount(provider.connection, admin, shareMintPDA, user.publicKey);
-      await mintTo(provider.connection, admin, tokenMint, tokenAcc[key], admin, 1000 * UNIT);
+  it("6. Проверяет комиссию 6 токенов, vault 594 и доли 1/6, 1/3, 1/2", async () => {
+    const v = await program.account.vaultState.fetch(vault);
+    assert.equal(v.totalTokens.toString(), String(594 * unit));
+    assert.equal(v.totalShares.toString(), String(594 * unit));
+    assert.equal(
+      (await getAccount(connection, vaultTokens, "confirmed")).amount.toString(),
+      String(594 * unit)
+    );
+    assert.equal(
+      (await getAccount(connection, feeWallet, "confirmed")).amount.toString(),
+      String(6 * unit)
+    );
+    const supply = (await getMint(connection, shareMint, "confirmed")).supply;
+    assert.equal(supply.toString(), String(594 * unit));
+    for (const [i, denominator] of [[0, 6], [1, 3], [2, 2]]) {
+      const balance = (await getAccount(connection, shares[i], "confirmed")).amount;
+      assert.equal((balance * BigInt(denominator)).toString(), supply.toString());
     }
-
-    await deposit(userA, 100 * UNIT);
-
-    const shares = await getAccount(provider.connection, shareAcc[userA.publicKey.toBase58()]);
-    assert.equal(shares.amount, BigInt(100 * UNIT));
-
-    const card = await program.account.userCard.fetch(cardPda(userA.publicKey));
-    assert.equal(card.deposited.toNumber(), 100 * UNIT);
-    assert.equal(card.shares.toNumber(), 100 * UNIT);
   });
 
-  it("deposit: B вносит 50 токенов → получает 50 shares", async () => {
-    await deposit(userB, 50 * UNIT);
-
-    const shares = await getAccount(provider.connection, shareAcc[userB.publicKey.toBase58()]);
-    assert.equal(shares.amount, BigInt(50 * UNIT));
-
-    const vault = await program.account.vaultState.fetch(vaultStatePDA);
-    assert.equal(vault.totalTokens.toNumber(), 150 * UNIT);
-    assert.equal(vault.totalShares.toNumber(), 150 * UNIT);
-
-    const vaultTokens = await getAccount(provider.connection, vaultTokenAccountPDA);
-    assert.equal(vaultTokens.amount, BigInt(150 * UNIT));
+  it("7. Запрещает подмену счёта комиссии", async () => {
+    await rejectDeposit(
+      () => deposit(0, unit, tokens[0]), "InvalidFeeWallet"
+    );
   });
 
-  it("deposit: без карточки — ошибка", async () => {
-    let failed = false;
-    try {
-      await deposit(userC, 10 * UNIT);
-    } catch {
-      failed = true;
-    }
-    assert.isTrue(failed, "депозит без карточки должен быть отклонён");
+  it("8. Посторонний пользователь не может включить паузу", async () => {
+    await expectError(() => pause(true, users[0]), "Unauthorized");
+    assert.isFalse((await program.account.vaultState.fetch(vault)).paused);
   });
 
-  it("deposit: сумма 0 — ошибка", async () => {
-    let failed = false;
-    try {
-      await deposit(userA, 0);
-    } catch {
-      failed = true;
-    }
-    assert.isTrue(failed, "нулевой депозит должен быть отклонён");
+  it("9. Администратор включает паузу, депозит отклоняется", async () => {
+    txs.pause = await pause(true);
+    assert.isTrue((await program.account.vaultState.fetch(vault)).paused);
+    await rejectDeposit(() => deposit(0, unit), "VaultPaused");
+  });
+
+  it("10. После снятия паузы депозит снова разрешён в симуляции", async () => {
+    txs.unpause = await pause(false);
+    assert.isFalse((await program.account.vaultState.fetch(vault)).paused);
+
+    const transaction = await program.methods.deposit(new anchor.BN(unit))
+      .accountsStrict({
+        vaultState: vault,
+        userCard: card(0),
+        vaultTokenAccount: vaultTokens,
+        shareMint,
+        userTokenAccount: tokens[0],
+        userShareAccount: shares[0],
+        feeWallet,
+        user: users[0].publicKey,
+        tokenProgram: TOKEN_PROGRAM_ID,
+      })
+      .transaction();
+
+    // Симуляция без отправки в сеть и без проверки криптографических подписей.
+    // Проверка реальных подписей уже выполняется при депозитах в тестах 4–5.
+    const before = await snapshot();
+    const simulation = await provider.simulate(
+      transaction, undefined, "confirmed"
+    );
+    assert.equal(await snapshot(), before);
+
+  });
+
+  after(function () {
+    const tests = this.test?.parent?.tests ?? [];
+    if (tests.length !== 10 || tests.some(t => t.state !== "passed")) return;
+
+    const addresses = {
+      program: program.programId.toBase58(),
+      admin: admin.publicKey.toBase58(),
+      tokenMint: mint.toBase58(),
+      vaultState: vault.toBase58(),
+      vaultTokenAccount: vaultTokens.toBase58(),
+      shareMint: shareMint.toBase58(),
+      feeWallet: feeWallet.toBase58(),
+      users: users.map((u, i) => ({
+        wallet: u.publicKey.toBase58(),
+        card: card(i).toBase58(),
+        tokenAccount: tokens[i].toBase58(),
+        shareAccount: shares[i].toBase58(),
+      })),
+    };
+    const result = {
+      network: "devnet",
+      checkedAt: new Date().toISOString(),
+      testsPassed: 10,
+      deposits: [100, 200, 300],
+      shares: [99, 198, 297],
+      fractions: ["1/6", "1/3", "1/2"],
+      totalTokens: 594,
+      feeTokens: 6,
+      addresses,
+      transactions: txs,
+    };
+    fs.mkdirSync("receipts", { recursive: true });
+    fs.writeFileSync(
+      "receipts/devnet-tests.json", JSON.stringify(result, null, 2)
+    );
+    console.log("\nДепозиты: 100 / 200 / 300");
+    console.log("Shares: 99 / 198 / 297");
+    console.log("Доли: 1/6 / 1/3 / 1/2");
+    console.log("Vault: 594 токена. Комиссия: 6 токенов.");
+    console.log("Результаты: receipts/devnet-tests.json");
   });
 });

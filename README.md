@@ -1,194 +1,155 @@
-# Simple Vault — практика Anchor
+# Задание 9 — депозиты и share-токены
 
-Учебный контракт на Anchor 0.31.1 (Solana). Сейчас он делает три вещи:
+Учебная программа на Solana Devnet, Anchor 0.31.1.
+Основа: [репозиторий преподавателя](https://github.com/0xnurda/vault-dev/tree/students-vault-card),
+коммит `38db796`.
 
-1. **Vault создан** — админ создаёт vault для SPL-токена. *(неделя 8)*
-2. **У каждого пользователя своя «карточка»** — личный аккаунт (PDA) внутри vault. *(неделя 8)*
-3. **Депозит и share-токены** — пользователь вносит токены и получает share-токены. *(неделя 9)*
+## Выполненные доработки
 
-Контракт будет дорабатываться (вывод, Raydium и т.д.), поэтому он намеренно небольшой.
+- Депозит SPL-токенов с выпуском share-токенов.
+- Комиссия 1% переводится на токеновый счёт fee_wallet.
+  Его адрес фиксируется при создании vault; подменить счёт при депозите нельзя.
+- Минимальный депозит — 1 целый токен до удержания комиссии.
+  Порог рассчитывается с учётом decimals выбранного mint.
+- Администратор может включать и снимать паузу депозитов.
+- Тесты проверяют депозиты трёх пользователей, комиссии и доли.
 
----
+## Расчёт
 
-## Что делает контракт
+Все суммы внутри программы хранятся в минимальных единицах токена.
 
+```text
+fee = amount / 100                 (целочисленно, округление вниз)
+net_amount = amount - fee
+первый депозит: shares = net_amount
+следующие: shares = net_amount × total_shares / total_tokens
 ```
-initialize_vault    создаёт VaultState PDA, vault token account и share mint
-create_user_card    создаёт UserCard PDA — личную карточку пользователя в vault
-deposit(amount)     переводит токены пользователя в vault → печатает ему shares
+
+В карточке deposited учитывается внесённая сумма до комиссии.
+В total_tokens учитывается сумма, поступившая в vault после комиссии.
+Тестовый токен и share mint имеют 6 decimals.
+
+## Результат проверки трёх пользователей
+
+| Пользователь | Внесено | Комиссия | В vault | Shares | Доля |
+|---|---:|---:|---:|---:|---|
+| A | 100 | 1 | 99 | 99 | 1/6 |
+| B | 200 | 2 | 198 | 198 | 1/3 |
+| C | 300 | 3 | 297 | 297 | 1/2 |
+| Всего | 600 | 6 | 594 | 594 | 1 |
+
+Пользователь A сначала внёс 1 токен, затем 99.
+Так отдельно проверяется приём минимальной допустимой суммы.
+
+## Связи аккаунтов
+
+```mermaid
+flowchart TD
+    U["Токеновый счёт пользователя"] -->|"99% депозита"| V["Vault Token Account"]
+    U -->|"1% комиссии"| F["fee_wallet"]
+    P["VaultState PDA"] -->|"token authority"| V
+    P -->|"mint authority"| M["Share Mint"]
+    M -->|"выпуск shares"| S["Share Account пользователя"]
+    P -->|"vault"| C["UserCard: owner, deposited, shares"]
 ```
 
-### `initialize_vault`
-
-Вызывает админ (платит за аккаунты). Создаёт три аккаунта для выбранного `token_mint`:
-
-| Аккаунт | Seeds | Что хранит |
-|---|---|---|
-| `vault_state` | `["vault", token_mint]` | admin, token_mint, адреса token account и share mint, `total_tokens`, `total_shares`, bump |
-| `vault_token_account` | `["vault_tokens", token_mint]` | токен-аккаунт, владелец — vault PDA |
-| `share_mint` | `["share_mint", token_mint]` | mint для shares (6 decimals), authority — vault PDA |
-
-### `create_user_card`
-
-Вызывает любой пользователь (платит за свою карточку). Создаёт `UserCard`:
-
-| Поле | Описание |
+| PDA | Seeds |
 |---|---|
-| `vault` | к какому vault относится карточка |
-| `owner` | владелец карточки |
-| `deposited` | сколько токенов пользователь внёс всего |
-| `shares` | сколько share-токенов он получил |
-| `bump` | bump PDA |
+| VaultState | `vault`, token_mint |
+| Vault Token Account | `vault_tokens`, token_mint |
+| Share Mint | `share_mint`, token_mint |
+| UserCard | `user_card`, vault_state, user |
 
-Seeds: `["user_card", vault_state, user]` — поэтому у одного пользователя в одном vault
-может быть **только одна** карточка. Повторный вызов завершится ошибкой.
+## Аккаунты Devnet
 
-### `deposit(amount)`
+| Аккаунт | Explorer |
+|---|---|
+| program | [9qXVRkBPumWVQkKRp7aTMBkviC7MjLKobBxbTFbdnu41](https://explorer.solana.com/address/9qXVRkBPumWVQkKRp7aTMBkviC7MjLKobBxbTFbdnu41?cluster=devnet) |
+| admin | [GCELxq8keKXzd1Q27D9KzW5z2nw6JzLHyHH592okLfoy](https://explorer.solana.com/address/GCELxq8keKXzd1Q27D9KzW5z2nw6JzLHyHH592okLfoy?cluster=devnet) |
+| tokenMint | [73eQUZGspfJsDZs8f3o84YzhScsv2voRgSJdt8bL2uzE](https://explorer.solana.com/address/73eQUZGspfJsDZs8f3o84YzhScsv2voRgSJdt8bL2uzE?cluster=devnet) |
+| vaultState | [6pePQY7gSTXWqjA2uEQcSLTGx2pokrnhvp5UCBakyGXp](https://explorer.solana.com/address/6pePQY7gSTXWqjA2uEQcSLTGx2pokrnhvp5UCBakyGXp?cluster=devnet) |
+| vaultTokenAccount | [2ZQSpGfDf1FVWME7umEdu11qdkjnLn7JnzHnSyDDF1ft](https://explorer.solana.com/address/2ZQSpGfDf1FVWME7umEdu11qdkjnLn7JnzHnSyDDF1ft?cluster=devnet) |
+| shareMint | [HUvzqTvFcFHPAJQgqqX9uYjup1GTZXFTx6xXEHrji6v3](https://explorer.solana.com/address/HUvzqTvFcFHPAJQgqqX9uYjup1GTZXFTx6xXEHrji6v3?cluster=devnet) |
+| feeWallet | [HnzW1yWkthVepwHHqAUoxWgiTfyk4iTrcUApRMW38c6f](https://explorer.solana.com/address/HnzW1yWkthVepwHHqAUoxWgiTfyk4iTrcUApRMW38c6f?cluster=devnet) |
+| Пользователь 1: wallet | [DDWZAhQQG8jJ8ELFGvBXDTbWi2podsCTawrnS5LWJBQM](https://explorer.solana.com/address/DDWZAhQQG8jJ8ELFGvBXDTbWi2podsCTawrnS5LWJBQM?cluster=devnet) |
+| Пользователь 1: card | [EyDwKWvusW14dmSffsPXNayNU4X1qMnaYCgvkfnq6MCm](https://explorer.solana.com/address/EyDwKWvusW14dmSffsPXNayNU4X1qMnaYCgvkfnq6MCm?cluster=devnet) |
+| Пользователь 1: tokenAccount | [DaSgJXS6AADd6KmnYTeDDXqftrJ91hi82xEFeKG4G4JU](https://explorer.solana.com/address/DaSgJXS6AADd6KmnYTeDDXqftrJ91hi82xEFeKG4G4JU?cluster=devnet) |
+| Пользователь 1: shareAccount | [9vP4sYX7bD5QCUVa8eVBEUg6v8rBjGChRGeSexEBkDeJ](https://explorer.solana.com/address/9vP4sYX7bD5QCUVa8eVBEUg6v8rBjGChRGeSexEBkDeJ?cluster=devnet) |
+| Пользователь 2: wallet | [AakcA9zMFFBQtg69L8D9HJidUrJbZk6ganY8xLSsuz5p](https://explorer.solana.com/address/AakcA9zMFFBQtg69L8D9HJidUrJbZk6ganY8xLSsuz5p?cluster=devnet) |
+| Пользователь 2: card | [CtQMej7ASfvXbaNoE5MBHbQamgB3AAko266epJWMj1ky](https://explorer.solana.com/address/CtQMej7ASfvXbaNoE5MBHbQamgB3AAko266epJWMj1ky?cluster=devnet) |
+| Пользователь 2: tokenAccount | [5bkwM5JMooDKsohqkqn3gyBCzd3MY439V6vvMEvFKWF4](https://explorer.solana.com/address/5bkwM5JMooDKsohqkqn3gyBCzd3MY439V6vvMEvFKWF4?cluster=devnet) |
+| Пользователь 2: shareAccount | [3F7kwSWvGy3omBWfS9xgwMqYV7aMchiDuVXJB6e7wHXQ](https://explorer.solana.com/address/3F7kwSWvGy3omBWfS9xgwMqYV7aMchiDuVXJB6e7wHXQ?cluster=devnet) |
+| Пользователь 3: wallet | [GWsStt1bG9EZrYqLyaMMFGbsvgLTYZeu4cdTcwfYChKY](https://explorer.solana.com/address/GWsStt1bG9EZrYqLyaMMFGbsvgLTYZeu4cdTcwfYChKY?cluster=devnet) |
+| Пользователь 3: card | [3xgegwQ1EaJ7uVmQdriKmzXP1JmUB1SJ8zFhkP9AWpdc](https://explorer.solana.com/address/3xgegwQ1EaJ7uVmQdriKmzXP1JmUB1SJ8zFhkP9AWpdc?cluster=devnet) |
+| Пользователь 3: tokenAccount | [8JFJi91rXBkiA8iyZGfTZkHG52vPqCdicGSTtRGCJXDC](https://explorer.solana.com/address/8JFJi91rXBkiA8iyZGfTZkHG52vPqCdicGSTtRGCJXDC?cluster=devnet) |
+| Пользователь 3: shareAccount | [AuAyioDioZwVfZykCitVv9sEn8LCR8DgtLsmQJnFMRQw](https://explorer.solana.com/address/AuAyioDioZwVfZykCitVv9sEn8LCR8DgtLsmQJnFMRQw?cluster=devnet) |
 
-Пользователь вносит `amount` токенов и получает share-токены — «квитанции» с его долей в vault.
-**Депозит возможен только после `create_user_card`** — без карточки инструкция вернёт ошибку.
+## Транзакции
 
-Что происходит по шагам:
+| Действие | Explorer |
+|---|---|
+| Развёртывание | [Открыть](https://explorer.solana.com/tx/2CRTgQn3TgfpyrBsfwVMXULtSgMi4RdKoLburRuk3fb6cSdMiwRfWcksfByi87CAvSG9WiUTAtbpwGaCD2Xs4qp6?cluster=devnet) |
+| initialize | [Открыть](https://explorer.solana.com/tx/WT9g45Zy38eYuLQnKFJAgDhfSZ3Jw3ebQuke3YEDGn6PNEeRbP7WadauQPWgJSsTr4kS3zxeAX7giengBZEHjbW?cluster=devnet) |
+| card1 | [Открыть](https://explorer.solana.com/tx/4DH6jSUhL9yjvo7G7LjG88qvBiKZrfPsTUdhKrPx8mgFYB762xKtyWae7BvewfgwQohgC1Bv79c8XFzzS7M2tTB?cluster=devnet) |
+| card2 | [Открыть](https://explorer.solana.com/tx/2v5AocNLZBsqUwosyDm5dASoiAFAvw8BZCpTK3cNr2ne4wquW4UWvXcfB1CsjN97F9ihLGWW5rCsN3N4J225cWyr?cluster=devnet) |
+| card3 | [Открыть](https://explorer.solana.com/tx/CqjtY8caPDAQwLSsb9XQCXVHaj5bqjiUm3xXdiRiu22gNgkB1A3Ljn8LrPaveDwA2Bx6nATMRcRYXzyi4CANUdX?cluster=devnet) |
+| minimum | [Открыть](https://explorer.solana.com/tx/qP5AcP7w6BTgrtKNBGddZmnF6NDMN9YNeazr5bhZPFNRXXkgPqnoaQiT6QLBbRLTnPBsMZEVbRUHaSP4TXqWvru?cluster=devnet) |
+| depositA | [Открыть](https://explorer.solana.com/tx/cJkW1ihFsKf7iwdYzYGRxcbXb119FC8yFuwt2J4QAQ8w4XtDkQ5up2gWHZ1BdkF36gHQL73cpYyAwC2ya3pKDmY?cluster=devnet) |
+| depositB | [Открыть](https://explorer.solana.com/tx/4wPPiLekyZ9vC7kCMkW4Wcn9nXrw2vkyT3qDYdJPxKfkP8wfDLsphqNrWkY28ZDmjq8N13XthH6CdVvm2RaYxpHc?cluster=devnet) |
+| depositC | [Открыть](https://explorer.solana.com/tx/64ZEegxkgwu7ZCLY8Eq81sP7VLCYXaWuhbG1usCKmTR6M4uSbhj3oece52izgePhmxxxa8trby1Aygua5pZD7d7n?cluster=devnet) |
+| pause | [Открыть](https://explorer.solana.com/tx/2z8Ajpv9hKNx22BuYRTptASjaeyWJ7GGbKjBTvNKKSuWYcWM4z3vE76Xm1C3GaULQUbdv4iUZpo4emZcT75w3BqB?cluster=devnet) |
+| unpause | [Открыть](https://explorer.solana.com/tx/43MiCGGCnuukgmedqHy3BE4NBAD5dQfgA5LYsN87nELrvwruvRpZJwcisu5M19FToPSZTL4pTwhN1rwCMcDREGPb?cluster=devnet) |
 
-1. Считается, сколько shares положено пользователю.
-2. Токены переводятся с токен-аккаунта пользователя в `vault_token_account`.
-3. Vault печатает shares на share-аккаунт пользователя (подписывает сам vault PDA).
-4. Обновляются `total_tokens` и `total_shares` в vault, а также `deposited` и `shares` в карточке.
+## Проверки
 
-**Формула shares:**
+Успешно выполнены `anchor build`, `yarn tsc --noEmit`
+и 10 тестов Devnet:
 
-```
-Первый депозит:       shares = amount                         (1:1)
-Последующие депозиты: shares = amount × total_shares / total_tokens
-```
+1. Создание vault, установка счёта комиссии и минимального депозита.
+2. Отклонение нулевой суммы.
+3. Отклонение суммы меньше 1 токена.
+4. Приём ровно 1 токена с комиссией 0.01.
+5. Депозиты трёх пользователей.
+6. Проверка 594 токенов в vault, комиссии 6 и долей по shares.
+7. Запрет подмены счёта комиссии.
+8. Запрет управления паузой посторонним пользователем.
+9. Блокировка депозита во время паузы.
+10. Успешная симуляция депозита после снятия паузы.
 
-Пример: A вносит 100 токенов → получает 100 shares. Потом B вносит 50 → получает 50 shares.
-В vault 150 токенов и 150 shares, у A доля 2/3, у B — 1/3.
+Последняя проверка не отправляет депозит в сеть, поэтому итоговые суммы
+в таблице сохраняются. Она выполняется без проверки криптографических
+подписей; реальные депозиты в тестах 4–5 отправляются с подписями.
 
-Ошибки: `ZeroAmount` (сумма 0), `SharesTooSmall` (депозит слишком мал, shares вышло бы 0), `MathOverflow`.
+Итог: **10 passing**. Адреса и подписи сохранены в
+[receipts/devnet-tests.json](receipts/devnet-tests.json).
 
-Для вызова `deposit` нужны: токен-аккаунт пользователя (с токенами vault) и share-аккаунт пользователя
-(для share mint). В тестах они создаются через `createAccount` из `@solana/spl-token`.
+## Запуск
 
----
-
-## Требования
-
-| Инструмент | Версия | Установка |
-|---|---|---|
-| Rust | stable | https://rustup.rs |
-| Solana CLI | 1.18+ | https://docs.solana.com/cli/install-solana-cli-tools |
-| Anchor CLI | 0.31.1 | `cargo install --git https://github.com/coral-xyz/anchor avm --locked && avm install 0.31.1 && avm use 0.31.1` |
-| Node.js | 18+ | https://nodejs.org |
-| Yarn | any | `npm i -g yarn` |
-
-Rust-зависимости (`anchor-lang`, `anchor-spl` 0.31.1) подтянутся сами при `anchor build`.
-JS-зависимости (`@coral-xyz/anchor`, `@solana/web3.js`, `@solana/spl-token`, `mocha`, `chai`, `typescript`) — через `yarn install`.
-
----
-
-## Быстрый старт
-
-### 1. Установить зависимости
+Нужны Rust, Solana CLI, Anchor 0.31.1, Node.js и Yarn 1.
 
 ```bash
-cd vault-simple
-yarn install
-```
-
-### 2. Сбилдить контракт
-
-```bash
+yarn install --frozen-lockfile
 anchor build
+yarn tsc --noEmit
 ```
 
-Если билдишь **первый раз** (новый keypair):
+Для тестов нужен кошелёк с тестовыми SOL и RPC Devnet:
 
 ```bash
-anchor keys sync   # обновит declare_id! в lib.rs и Anchor.toml
-anchor build       # пересобрать с правильным ID
+export ANCHOR_WALLET="$HOME/.config/solana/id.json"
+read -r -s -p "Devnet RPC URL: " ANCHOR_PROVIDER_URL
+echo
+export ANCHOR_PROVIDER_URL
+yarn run ts-mocha -p ./tsconfig.json -t 1000000 --exit tests/vault.ts
 ```
 
-Артефакты в `target/deploy/`:
-- `simple_vault.so` — программа
-- `simple_vault-keypair.json` — keypair (не коммитить!)
+Каждый запуск создаёт новый тестовый mint и vault, расходует тестовые SOL
+и обновляет receipts/devnet-tests.json.
 
-### 3. Настроить Solana CLI на devnet
+Для развёртывания собственной программы сначала выполните
+`anchor build`, затем `anchor keys sync` и повторно `anchor build`.
+После этого разверните свою программу в Devnet.
 
-```bash
-solana config set --url devnet
-solana address     # твой публичный ключ — запомни его
-solana balance
-```
+## Скриншоты
 
-### 4. Пополнить кошелёк
-
-Для деплоя нужно ~2 SOL.
-
-```bash
-solana airdrop 2   # может не сработать из-за rate limit
-```
-
-Если rate limit — используй faucet:
-- https://faucet.solana.com (вставь свой адрес)
-
-### 5. Задеплоить
-
-```bash
-anchor deploy --provider.cluster devnet
-```
-
-### 6. Запустить тесты
-
-```bash
-yarn test
-```
-
-Ожидаемый вывод:
-
-```
-✔ initialize_vault: vault создан
-✔ create_user_card: у каждого пользователя своя карточка
-✔ create_user_card: вторая карточка для того же пользователя — ошибка
-✔ deposit: A вносит 100 токенов → получает 100 shares
-✔ deposit: B вносит 50 токенов → получает 50 shares
-✔ deposit: без карточки — ошибка
-✔ deposit: сумма 0 — ошибка
-7 passing
-```
-
----
-
-## Структура проекта
-
-```
-vault-simple/
-├── programs/simple_vault/src/lib.rs   # контракт
-├── tests/vault.ts                     # тесты
-├── Anchor.toml
-├── Cargo.toml
-└── package.json
-```
-
----
-
-## Частые ошибки
-
-| Ошибка | Причина | Решение |
-|---|---|---|
-| `Insufficient funds` при деплое | мало SOL | пополни кошелёк на devnet |
-| `AccountNotInitialized` в тестах | программа не задеплоена или другой ID | `anchor keys sync` → `anchor build` → `anchor deploy` |
-| `already in use` при `create_user_card` | у пользователя уже есть карточка | это ожидаемо, карточка одна на пользователя |
-| `AccountNotInitialized` (`user_card`) при `deposit` | нет карточки | сначала вызови `create_user_card` |
-| `ZeroAmount` | `amount = 0` | вноси сумму больше нуля |
-| `SharesTooSmall` | депозит слишком мал относительно vault | увеличь сумму |
-| `429 Too Many Requests` | лимит публичного devnet RPC | подожди или возьми свой RPC |
-
----
-
-## Задания для практики
-
-1. Добавить комиссию 1% на депозит и отправлять её на `fee_wallet`.
-2. Добавить минимальный депозит (например, 1 токен).
-3. Добавить флаг `paused` в `VaultState`: админ может остановить депозиты.
-4. Написать тест: трое пользователей вносят разные суммы, проверить доли по shares.
+Скриншоты развёртывания и успешных тестов будут добавлены в папку screenshots.

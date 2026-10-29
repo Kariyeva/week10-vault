@@ -1,7 +1,7 @@
 use anchor_lang::prelude::*;
 use anchor_spl::token::{self, Mint, MintTo, Token, TokenAccount, Transfer};
 
-declare_id!("EbojNUfh9Jk6dyZaaQAJWofbdnkvdxfQbeAPq6iWoHAu");
+declare_id!("9qXVRkBPumWVQkKRp7aTMBkviC7MjLKobBxbTFbdnu41");
 
 #[program]
 pub mod simple_vault {
@@ -15,6 +15,11 @@ pub mod simple_vault {
         vault.token_mint = ctx.accounts.token_mint.key();
         vault.vault_token_account = ctx.accounts.vault_token_account.key();
         vault.share_mint = ctx.accounts.share_mint.key();
+        vault.fee_wallet = ctx.accounts.fee_wallet.key();
+        vault.min_deposit = 10u64
+            .checked_pow(ctx.accounts.token_mint.decimals as u32)
+            .ok_or(VaultError::MathOverflow)?;
+        vault.paused = false;
         vault.total_tokens = 0;
         vault.total_shares = 0;
         vault.bump = ctx.bumps.vault_state;
@@ -40,16 +45,30 @@ pub mod simple_vault {
     /// Формула:
     ///   Первый депозит:       shares = amount  (1:1)
     ///   Последующие депозиты: shares = amount * total_shares / total_tokens
+    pub fn set_paused(ctx: Context<SetPaused>, paused: bool) -> Result<()> {
+        ctx.accounts.vault_state.paused = paused;
+        msg!("Vault paused: {}", paused);
+        Ok(())
+    }
+
     pub fn deposit(ctx: Context<Deposit>, amount: u64) -> Result<()> {
         require!(amount > 0, VaultError::ZeroAmount);
 
         let vault = &ctx.accounts.vault_state;
+        require!(!vault.paused, VaultError::VaultPaused);
+        require!(amount >= vault.min_deposit, VaultError::BelowMinimum);
 
-        // Сколько shares получит пользователь
+        // Комиссия 1%, округление вниз до минимальной единицы токена.
+        let fee = amount / 100;
+        let net_amount = amount
+            .checked_sub(fee)
+            .ok_or(VaultError::MathOverflow)?;
+
+        // Shares начисляются только на сумму, поступающую в vault.
         let shares = if vault.total_shares == 0 || vault.total_tokens == 0 {
-            amount // первый депозит: 1 share = 1 token
+            net_amount // первый депозит: shares за сумму после комиссии
         } else {
-            (amount as u128)
+            (net_amount as u128)
                 .checked_mul(vault.total_shares as u128)
                 .and_then(|v| v.checked_div(vault.total_tokens as u128))
                 .and_then(|v| u64::try_from(v).ok())
@@ -67,8 +86,22 @@ pub mod simple_vault {
                     authority: ctx.accounts.user.to_account_info(),
                 },
             ),
-            amount,
+            net_amount,
         )?;
+
+        if fee > 0 {
+            token::transfer(
+                CpiContext::new(
+                    ctx.accounts.token_program.to_account_info(),
+                    Transfer {
+                        from: ctx.accounts.user_token_account.to_account_info(),
+                        to: ctx.accounts.fee_wallet.to_account_info(),
+                        authority: ctx.accounts.user.to_account_info(),
+                    },
+                ),
+                fee,
+            )?;
+        }
 
         // 2. Печатаем shares пользователю (подписывает vault PDA)
         let token_mint_key = ctx.accounts.vault_state.token_mint;
@@ -94,7 +127,7 @@ pub mod simple_vault {
 
         // 3. Обновляем vault и карточку пользователя
         let vault = &mut ctx.accounts.vault_state;
-        vault.total_tokens = vault.total_tokens.checked_add(amount).ok_or(VaultError::MathOverflow)?;
+        vault.total_tokens = vault.total_tokens.checked_add(net_amount).ok_or(VaultError::MathOverflow)?;
         vault.total_shares = vault.total_shares.checked_add(shares).ok_or(VaultError::MathOverflow)?;
 
         let card = &mut ctx.accounts.user_card;
@@ -102,8 +135,8 @@ pub mod simple_vault {
         card.shares = card.shares.checked_add(shares).ok_or(VaultError::MathOverflow)?;
 
         msg!(
-            "Deposit: {} tokens -> {} shares (total_tokens={}, total_shares={})",
-            amount, shares, vault.total_tokens, vault.total_shares
+            "Deposit: gross={}, fee={}, net={}, shares={}, total_tokens={}, total_shares={}",
+            amount, fee, net_amount, shares, vault.total_tokens, vault.total_shares
         );
         Ok(())
     }
@@ -150,6 +183,14 @@ pub struct InitializeVault<'info> {
     /// SPL-токен, который принимает vault
     pub token_mint: Account<'info, Mint>,
 
+    /// Токеновый счёт получателя комиссии для того же mint.
+    #[account(
+        token::mint = token_mint,
+        constraint = fee_wallet.key() != vault_token_account.key()
+            @ VaultError::InvalidFeeWallet,
+    )]
+    pub fee_wallet: Account<'info, TokenAccount>,
+
     #[account(mut)]
     pub admin: Signer<'info>,
 
@@ -180,6 +221,18 @@ pub struct CreateUserCard<'info> {
     pub user: Signer<'info>,
 
     pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+pub struct SetPaused<'info> {
+    #[account(
+        mut,
+        seeds = [b"vault", vault_state.token_mint.as_ref()],
+        bump = vault_state.bump,
+        has_one = admin @ VaultError::Unauthorized,
+    )]
+    pub vault_state: Account<'info, VaultState>,
+    pub admin: Signer<'info>,
 }
 
 #[derive(Accounts)]
@@ -226,6 +279,18 @@ pub struct Deposit<'info> {
     )]
     pub user_token_account: Account<'info, TokenAccount>,
 
+    /// Адрес закреплён при инициализации: пользователь не может его подменить.
+    #[account(
+        mut,
+        address = vault_state.fee_wallet @ VaultError::InvalidFeeWallet,
+        token::mint = vault_state.token_mint,
+        constraint = fee_wallet.key() != user_token_account.key()
+            @ VaultError::InvalidFeeWallet,
+        constraint = fee_wallet.key() != vault_token_account.key()
+            @ VaultError::InvalidFeeWallet,
+    )]
+    pub fee_wallet: Account<'info, TokenAccount>,
+
     /// Share-аккаунт пользователя (куда придут shares)
     #[account(
         mut,
@@ -251,13 +316,16 @@ pub struct VaultState {
     pub token_mint: Pubkey,          // 32 — SPL-токен vault'а
     pub vault_token_account: Pubkey, // 32 — PDA для токенов
     pub share_mint: Pubkey,          // 32 — mint для shares
+    pub fee_wallet: Pubkey,          // счёт комиссии
+    pub min_deposit: u64,               // один токен в минимальных единицах
+    pub paused: bool,
     pub total_tokens: u64,           // 8  — всего токенов в vault
     pub total_shares: u64,           // 8  — всего выпущено shares
     pub bump: u8,                    // 1
 }
 
 impl VaultState {
-    pub const LEN: usize = 8 + 32 + 32 + 32 + 32 + 8 + 8 + 1;
+    pub const LEN: usize = 8 + 32 + 32 + 32 + 32 + 32 + 8 + 1 + 8 + 8 + 1;
 }
 
 /// Карточка пользователя в vault.
@@ -287,4 +355,12 @@ pub enum VaultError {
     SharesTooSmall,
     #[msg("Math overflow")]
     MathOverflow,
+    #[msg("Deposit is below one whole token")]
+    BelowMinimum,
+    #[msg("Vault deposits are paused")]
+    VaultPaused,
+    #[msg("Only the administrator can change pause")]
+    Unauthorized,
+    #[msg("Invalid fee token account")]
+    InvalidFeeWallet,
 }
