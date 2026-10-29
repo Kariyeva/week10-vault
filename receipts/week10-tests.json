@@ -1,0 +1,70 @@
+{
+  "network": "devnet",
+  "checkedAt": "2026-10-29T14:28:48.468Z",
+  "testsPassed": 17,
+  "deposits": [
+    100,
+    200,
+    300
+  ],
+  "shares": [
+    99,
+    198,
+    297
+  ],
+  "fractions": [
+    "1/6",
+    "1/3",
+    "1/2"
+  ],
+  "tokensBeforeWithdraw": 594,
+  "totalTokens": 0,
+  "totalShares": 0,
+  "withdrawnTokens": 594,
+  "feeTokens": 6,
+  "addresses": {
+    "program": "EYvZXmBTwkJJeFpkjJMczbqTRH2moFcvZzAKeAEpsLoL",
+    "admin": "GCELxq8keKXzd1Q27D9KzW5z2nw6JzLHyHH592okLfoy",
+    "tokenMint": "CbreRGbGmvsXZWfPViA3tJZnfDTErsxhjq4q6zHM5fHz",
+    "vaultState": "HKAoMadgEUP1FJuMXWc61eNfGrAWuRWair7bj5RHFFxa",
+    "vaultTokenAccount": "BSsgoFcHt2acnSoWkZYfSG7qm8oXhrCQes7q2aUT5Go8",
+    "shareMint": "4tQ858VrnHTZDgdNDnWys79f48frovFmyvSRB2RW1KWB",
+    "feeWallet": "Fpf2seXLCJHHgLuzTfVFqwbASopMc86PtGHdAi6Cjrgn",
+    "users": [
+      {
+        "wallet": "4bk3YY5Tyu1WUJ3eG5jzM8x3zzg4nSjpsNQfiyoQm8Rv",
+        "card": "8ePwXdzWnetVfSytb4nBug6YdWSjmcedcqyMQVW5pnKi",
+        "tokenAccount": "GGMVDYCGyHJK3FYgZYvpjWiaZiuTH9GuDgYxKwzx3qLq",
+        "shareAccount": "2zHYvs1Eokoti7B8UaYrjheXKeVnicCB6W2u5yMNjb3P"
+      },
+      {
+        "wallet": "7z5kNwLoDKbhY7vVSBbvMkrVj8exA4qbRZYF8BcwCPXn",
+        "card": "DAxkmVPS9bpUH3boVvNV3zL1Ak8jvczLmUaLnygYiv2x",
+        "tokenAccount": "2J1SAT1tdL2gn398KojuhovSurRhemqzSV4WsozKHYby",
+        "shareAccount": "3UyHPzzq1ifcFzN1Dr7kF7gi5pfgh2e9Dp2acYPCGz9w"
+      },
+      {
+        "wallet": "G2yb8s3ZKmAHZi6T26MF2DJ6yopiyPtpM32kDQF7wYDW",
+        "card": "2iDgH3hubS8DK1Hr416Ku2DD82doGEVHVqN2aMzxwmPp",
+        "tokenAccount": "ER2NmLhBwHkXdLgHTd3ZqsA118pcMFaCwCYktrBVsXfh",
+        "shareAccount": "DNG75Gxn7XuMLngjLmC2yGgQk1uX17xN4197h2eMq7zf"
+      }
+    ]
+  },
+  "transactions": {
+    "initialize": "3qJbVLz1sNtdNwLMbTZjDqyncLk2D2Kti1tztzDyQaRuQXnxLt1ME6MpiRHzER1zK4jh5Ar6K8W2725MjfpQm4Qz",
+    "card1": "4a2bHACsRnE88CTKmzsmnKJSxEuvV3RLomDbMb5c7UNNiYo3joNBJbxbZ5FdZCABeqBWZgCQihBz46RAaoDGWjYT",
+    "card2": "4GPPaqhmQejjtJrH4pwd453TMxo79QCDVbje42ujqYSoD6KtwkmoR4UJJ9Cdx6XZEPfmPta8jgLTaJLPi3u8zwab",
+    "card3": "CE47zCyURjCqW1UE98fQTaiHCjT7y6gf7Dw4EPSCJqmuRHWon3CnSAL9rNuLiSRqrzCpNDc7NvfT2Saiuvx75a2",
+    "minimum": "5zXFZce9MmWkXnq1aw6rSAATZVaYtzsx3hdKMkh8zXu6p7VaPF5koDJEaDmqRDfnfZ7SYYuAyNrAJA5p2FHCyh9Z",
+    "depositA": "aiFR5gNJW3H7x5Xz57tMASy8cQJGoNkjysRijnag2UmQK4vcKr4EfrSqgKu4CxTwoFfs6cMtv5WumZz2hKafZSZ",
+    "depositB": "47QBjvHu5x1mRAVVy1Fc8d7UJzbrjTPiPUdcE4Va1SpMcrX8hdGWDNUf8Vy7MMG1GGsBSp684LTPyQUiBYMT1eTH",
+    "depositC": "3mzwP17yuxQmMT2aJ7gAZF4h7TcMCeH4Y8Q8gC5GnAn4WQ3biCXdy5YjLP3cfBPixPEYuNMKCqmXGxv8KsHXYDTu",
+    "pause": "5aSXhwQuUSFsdMEjm295sPrdfxQRja4empCknsrokNf7gRRPazQZ4wMr2XGoKNSegjZgvS3HYA14qYFqx7XWPMd9",
+    "unpause": "4aeZ1MRn47eJUZHbw8D8AMydsaVT21DZ3dyvP5vdZdQgw4QPALGABjHznsURSFQ7MEeEqDYemnDym2KGQRJdtSUC",
+    "withdrawPartial": "62CyNjdHCiZKNagqw1fiCm8o2N4tTJjXmShN15TyTv66zJAPso6shkqv8GA9sh2ZH8t62cRsT9c5uttj6LE5KkVr",
+    "withdrawRestA": "5tj439rU1SrvTViPPTbVKxvwYBSPyRMYn2af3b6suNX8bkWQtvSYTGvBmB7EiCqgzP2QVnxCq3Wc3k3GrcJFAYj8",
+    "withdrawB": "3z4YdSa1LFqM35e9eWsENLA55CTgXQVxNXMjcLx8hyXvA7Z7BaUiNRaAhkLTpUjgKBURFvmJz88ZHaHg5tcjtmjb",
+    "withdrawC": "B5SZnps66qdaocxN4mbtS8cjhLMD7T4J2zQ12ZN1jfqdkhXe7QagHho3NMaR6MCnaJ6fvRUWdf45k7S6sr8qKgM"
+  }
+}

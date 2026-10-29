@@ -1,7 +1,7 @@
 use anchor_lang::prelude::*;
-use anchor_spl::token::{self, Mint, MintTo, Token, TokenAccount, Transfer};
+use anchor_spl::token::{self, Burn, Mint, MintTo, Token, TokenAccount, Transfer};
 
-declare_id!("9qXVRkBPumWVQkKRp7aTMBkviC7MjLKobBxbTFbdnu41");
+declare_id!("EYvZXmBTwkJJeFpkjJMczbqTRH2moFcvZzAKeAEpsLoL");
 
 #[program]
 pub mod simple_vault {
@@ -48,6 +48,79 @@ pub mod simple_vault {
     pub fn set_paused(ctx: Context<SetPaused>, paused: bool) -> Result<()> {
         ctx.accounts.vault_state.paused = paused;
         msg!("Vault paused: {}", paused);
+        Ok(())
+    }
+
+    /// Сжечь shares пользователя и вернуть его долю токенов.
+    pub fn withdraw(ctx: Context<Withdraw>, shares: u64) -> Result<()> {
+        require!(shares > 0, VaultError::ZeroAmount);
+
+        let vault = &ctx.accounts.vault_state;
+        require!(
+            shares <= ctx.accounts.user_card.shares
+                && shares <= ctx.accounts.user_share_account.amount,
+            VaultError::InsufficientShares
+        );
+        require!(
+            vault.total_shares > 0 && shares <= vault.total_shares,
+            VaultError::InsufficientShares
+        );
+
+        let amount = (shares as u128)
+            .checked_mul(vault.total_tokens as u128)
+            .and_then(|v| v.checked_div(vault.total_shares as u128))
+            .and_then(|v| u64::try_from(v).ok())
+            .ok_or(VaultError::MathOverflow)?;
+
+        require!(amount > 0, VaultError::WithdrawalTooSmall);
+        require!(
+            amount <= ctx.accounts.vault_token_account.amount,
+            VaultError::InsufficientLiquidity
+        );
+
+        // CPI 1: пользователь разрешает сжечь свои shares.
+        token::burn(
+            CpiContext::new(
+                ctx.accounts.token_program.to_account_info(),
+                Burn {
+                    mint: ctx.accounts.share_mint.to_account_info(),
+                    from: ctx.accounts.user_share_account.to_account_info(),
+                    authority: ctx.accounts.user.to_account_info(),
+                },
+            ),
+            shares,
+        )?;
+
+        // CPI 2: программа подписывает перевод из vault через PDA seeds.
+        let token_mint = ctx.accounts.vault_state.token_mint;
+        let bump = [ctx.accounts.vault_state.bump];
+        let seeds: &[&[u8]] = &[b"vault", token_mint.as_ref(), &bump];
+        let signer = &[seeds];
+
+        token::transfer(
+            CpiContext::new_with_signer(
+                ctx.accounts.token_program.to_account_info(),
+                Transfer {
+                    from: ctx.accounts.vault_token_account.to_account_info(),
+                    to: ctx.accounts.user_token_account.to_account_info(),
+                    authority: ctx.accounts.vault_state.to_account_info(),
+                },
+                signer,
+            ),
+            amount,
+        )?;
+
+        let vault = &mut ctx.accounts.vault_state;
+        vault.total_tokens = vault.total_tokens
+            .checked_sub(amount).ok_or(VaultError::MathOverflow)?;
+        vault.total_shares = vault.total_shares
+            .checked_sub(shares).ok_or(VaultError::MathOverflow)?;
+
+        let card = &mut ctx.accounts.user_card;
+        card.shares = card.shares
+            .checked_sub(shares).ok_or(VaultError::MathOverflow)?;
+
+        msg!("Withdraw: shares={}, tokens={}", shares, amount);
         Ok(())
     }
 
@@ -236,6 +309,61 @@ pub struct SetPaused<'info> {
 }
 
 #[derive(Accounts)]
+pub struct Withdraw<'info> {
+    #[account(
+        mut,
+        seeds = [b"vault", vault_state.token_mint.as_ref()],
+        bump = vault_state.bump,
+    )]
+    pub vault_state: Account<'info, VaultState>,
+
+    #[account(
+        mut,
+        seeds = [b"user_card", vault_state.key().as_ref(), user.key().as_ref()],
+        bump = user_card.bump,
+        constraint = user_card.owner == user.key() @ VaultError::InvalidUserCard,
+        constraint = user_card.vault == vault_state.key() @ VaultError::InvalidUserCard,
+    )]
+    pub user_card: Account<'info, UserCard>,
+
+    #[account(
+        mut,
+        seeds = [b"vault_tokens", vault_state.token_mint.as_ref()],
+        bump,
+        address = vault_state.vault_token_account,
+        token::mint = vault_state.token_mint,
+        token::authority = vault_state,
+    )]
+    pub vault_token_account: Account<'info, TokenAccount>,
+
+    #[account(
+        mut,
+        seeds = [b"share_mint", vault_state.token_mint.as_ref()],
+        bump,
+        address = vault_state.share_mint,
+        mint::authority = vault_state,
+    )]
+    pub share_mint: Account<'info, Mint>,
+
+    #[account(
+        mut,
+        token::mint = vault_state.token_mint,
+        token::authority = user,
+    )]
+    pub user_token_account: Account<'info, TokenAccount>,
+
+    #[account(
+        mut,
+        token::mint = share_mint,
+        token::authority = user,
+    )]
+    pub user_share_account: Account<'info, TokenAccount>,
+
+    pub user: Signer<'info>,
+    pub token_program: Program<'info, Token>,
+}
+
+#[derive(Accounts)]
 pub struct Deposit<'info> {
     #[account(
         mut,
@@ -363,4 +491,12 @@ pub enum VaultError {
     Unauthorized,
     #[msg("Invalid fee token account")]
     InvalidFeeWallet,
+    #[msg("Not enough shares in the card or token account")]
+    InsufficientShares,
+    #[msg("Withdrawal would return zero tokens")]
+    WithdrawalTooSmall,
+    #[msg("Not enough tokens available in the vault")]
+    InsufficientLiquidity,
+    #[msg("User card does not match the owner or vault")]
+    InvalidUserCard,
 }
