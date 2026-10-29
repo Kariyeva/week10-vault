@@ -152,4 +152,10 @@ yarn run ts-mocha -p ./tsconfig.json -t 1000000 --exit tests/vault.ts
 
 ## Скриншоты
 
-Скриншоты развёртывания и успешных тестов будут добавлены в папку screenshots.
+### Развёртывание в Devnet
+
+![Развёртывание программы](screenshots/week9-deploy.jpeg)
+
+### Результаты тестирования
+
+![Успешные тесты](screenshots/week9-tests.jpeg)
